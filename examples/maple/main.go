@@ -9,6 +9,7 @@
 //	echo "Tell me a joke" | maple
 //	maple --model kimi-k2-5 "Explain quantum computing"
 //	maple --list-models
+//	maple proxy --port 8080
 package main
 
 import (
@@ -41,6 +42,12 @@ func init() {
 }
 
 func main() {
+	// Check for subcommands before flag parsing
+	if len(os.Args) > 1 && os.Args[1] == "proxy" {
+		runProxy(os.Args[2:])
+		return
+	}
+
 	model := flag.String("model", "qwen3-vl-30b", "Model name to use")
 	baseURL := flag.String("url", defaultBaseURL, "TEE enclave URL")
 	think := flag.Bool("think", false, "Enable extended thinking")
@@ -110,6 +117,7 @@ func main() {
 	if strings.TrimSpace(prompt) == "" {
 		fmt.Fprintln(os.Stderr, "Usage: maple [flags] \"prompt\"")
 		fmt.Fprintln(os.Stderr, "       echo \"prompt\" | maple [flags]")
+		fmt.Fprintln(os.Stderr, "       maple proxy [--port 8080]")
 		os.Exit(1)
 	}
 
