@@ -24,10 +24,19 @@ type AttestationDocument struct {
 	Nonce       []byte
 }
 
-// AttestationVerifier verifies AWS Nitro attestation documents
+// AttestationVerifier verifies AWS Nitro attestation documents. AllowDebug is
+// the only mutable-after-construction state it carries — PCR policy
+// (ExpectedPCRs / a validator callback) is deliberately NOT a field. An
+// earlier version stored a PCRValidator field here, mutated per-handshake by
+// callers wanting a fresh closure per call (e.g. one bound to that call's
+// context); that is a data race on any *AttestationVerifier used from more
+// than one goroutine, and even single-goroutine "set then immediately call"
+// is not atomic against a second caller sharing the same client. PCR policy
+// is now passed directly into VerifyAttestationDocument as ordinary
+// parameters instead, which cannot race by construction (2026-08-15, review
+// finding).
 type AttestationVerifier struct {
-	ExpectedPCRs map[uint][]byte
-	AllowDebug   bool
+	AllowDebug bool
 }
 
 // NewAttestationVerifier creates a new attestation verifier
@@ -37,20 +46,18 @@ func NewAttestationVerifier() *AttestationVerifier {
 	}
 }
 
-// WithExpectedPCRs sets expected PCR values for verification
-func (v *AttestationVerifier) WithExpectedPCRs(pcrs map[uint][]byte) *AttestationVerifier {
-	v.ExpectedPCRs = pcrs
-	return v
-}
-
 // WithAllowDebug enables debug/mock mode
 func (v *AttestationVerifier) WithAllowDebug(allow bool) *AttestationVerifier {
 	v.AllowDebug = allow
 	return v
 }
 
-// VerifyAttestationDocument verifies an attestation document and returns the parsed document
-func (v *AttestationVerifier) VerifyAttestationDocument(documentB64 string, expectedNonce string) (*AttestationDocument, error) {
+// VerifyAttestationDocument verifies an attestation document and returns the
+// parsed document. expectedPCRs and pcrValidator are both optional (nil
+// skips that check) and are genuine per-call arguments, not stored state —
+// concurrent calls on the same *AttestationVerifier, even with different
+// policies, cannot race or clobber each other.
+func (v *AttestationVerifier) VerifyAttestationDocument(documentB64 string, expectedNonce string, expectedPCRs map[uint][]byte, pcrValidator func(pcrs map[uint][]byte) error) (*AttestationDocument, error) {
 	// Decode base64
 	documentBytes, err := base64.StdEncoding.DecodeString(documentB64)
 	if err != nil {
@@ -92,17 +99,22 @@ func (v *AttestationVerifier) VerifyAttestationDocument(documentB64 string, expe
 	}
 
 	// Verify PCRs if expected
-	if v.ExpectedPCRs != nil {
-		if err := v.verifyPCRs(doc); err != nil {
+	if expectedPCRs != nil {
+		if err := verifyPCRs(doc, expectedPCRs); err != nil {
 			return nil, err
+		}
+	}
+	if pcrValidator != nil {
+		if err := pcrValidator(doc.PCRs); err != nil {
+			return nil, NewAttestationError("PCR validation failed", err)
 		}
 	}
 
 	return doc, nil
 }
 
-func (v *AttestationVerifier) verifyPCRs(doc *AttestationDocument) error {
-	for index, expected := range v.ExpectedPCRs {
+func verifyPCRs(doc *AttestationDocument, expectedPCRs map[uint][]byte) error {
+	for index, expected := range expectedPCRs {
 		actual, ok := doc.PCRs[index]
 		if !ok {
 			return NewAttestationError("missing PCR", nil)

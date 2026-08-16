@@ -67,8 +67,23 @@ func (c *OpenSecretClient) GetSessionID() (uuid.UUID, error) {
 	return session.SessionID, nil
 }
 
-// PerformAttestationHandshake establishes a secure session with the TEE
+// PerformAttestationHandshake establishes a secure session with the TEE.
 func (c *OpenSecretClient) PerformAttestationHandshake(ctx context.Context) error {
+	return c.performAttestationHandshake(ctx, nil, nil)
+}
+
+// PerformAttestationHandshakeWithPCRValidator behaves like
+// PerformAttestationHandshake, but additionally requires the observed PCR
+// values to satisfy validator (called after core verification — signature
+// chain + nonce — succeeds, before the key exchange proceeds). validator is
+// a genuine per-call argument, not stored client/verifier state, so it
+// cannot race with or be clobbered by a concurrent handshake — including one
+// sharing this same *OpenSecretClient.
+func (c *OpenSecretClient) PerformAttestationHandshakeWithPCRValidator(ctx context.Context, validator func(pcrs map[uint][]byte) error) error {
+	return c.performAttestationHandshake(ctx, nil, validator)
+}
+
+func (c *OpenSecretClient) performAttestationHandshake(ctx context.Context, expectedPCRs map[uint][]byte, pcrValidator func(pcrs map[uint][]byte) error) error {
 	// Generate a nonce
 	nonce := uuid.New().String()
 
@@ -81,7 +96,7 @@ func (c *OpenSecretClient) PerformAttestationHandshake(ctx context.Context) erro
 	// Step 2: Parse and verify attestation document
 	var doc *AttestationDocument
 	if !c.useMockAttestation {
-		doc, err = c.verifier.VerifyAttestationDocument(attestationResp.AttestationDocument, nonce)
+		doc, err = c.verifier.VerifyAttestationDocument(attestationResp.AttestationDocument, nonce, expectedPCRs, pcrValidator)
 		if err != nil {
 			return err
 		}
